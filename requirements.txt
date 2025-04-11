@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+requests
+httpx
+beautifulsoup4
+playwright==1.41
+python-dotenv
+supabase
+lxml
+xmltodict
+pymupdf
+google-genai
+pillow
+sqlalchemy==2.0.23
+pymysql==1.1.0
+pandas==2.1.3
