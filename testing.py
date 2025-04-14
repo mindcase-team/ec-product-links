@@ -19,9 +19,7 @@ import random
 from supabase import create_client, Client  
 import time
 import gc
-from caching import *
-from job_scrape.unstop import *
-# from test_files.pdf_prompts import *
+from llmcall import *
 import csv
 from io import StringIO
 from datetime import datetime
@@ -109,6 +107,49 @@ user_agents = [
 class ScrapeRequest(BaseModel):
     url: str
     page: Optional[int] = None
+    
+# def sync_scroll_page(page, max_scrolls=10, wait_time=2):
+#     last_height = page.evaluate("() => document.body.scrollHeight")
+#     print(f"Initial height: {last_height}")
+
+#     for _ in range(max_scrolls):
+#         page.evaluate(f"() => window.scrollTo(0, {last_height})")
+#         time.sleep(wait_time)
+
+#         new_height = page.evaluate("() => document.body.scrollHeight")
+#         if new_height == last_height:
+#             print("No more content to load.")
+#             break
+#         last_height = new_height
+
+#     print("Scrolling complete.")
+
+async def pagination_type(page,url):
+    
+    output_format = {
+        "pagination":True,
+        "scrolling":True,
+        "selector":None
+    }
+    try:
+        content = await page.content()
+        soup = BeautifulSoup(content, 'lxml')
+        text = soup.get_text()
+        prompt = f"""
+            from this text content of a webpage, identify whether the webpage has pagination with subpages for products or not.
+            If the products are loaded by scrolling and not by a button that needs to be clicked that does not constitute as pagination.
+            Also give the name/selector of the pagination button if it is present.
+            If scrolling is required to load more products but some button is needed to be clicked to load products then give the name of the buttoon in selector along with scrolling True but pagination False.
+            output in this json format: {output_format}.
+            The text content is below - {text}
+            """
+        response = await llm_service(prompt)
+        response = json.loads(response)
+        print(response)
+        return response["pagination"],response["scrolling"],response["selector"]
+    except Exception as ex:
+        print(f"error in pagination_type {str(ex)}")
+        return False,None
 
 async def scroll_page(page):
     # last_height = await page.evaluate("document.body.scrollHeight")
@@ -133,22 +174,59 @@ async def scroll_page(page):
         last_height = new_height
     return []
 
-def sync_scroll_page(page, max_scrolls=10, wait_time=2):
-    last_height = page.evaluate("() => document.body.scrollHeight")
-    print(f"Initial height: {last_height}")
+async def pagination_scroll(page,url,selector=None,llm=None):
+    # last_height = await page.evaluate("document.body.scrollHeight")
+    
+    last_height = await page.evaluate("document.documentElement.scrollHeight")
+    print("last_height",last_height)
+    all_urls = set()
+    while True:
+        prev_length = len(all_urls)
+        content = await page.content()
+        soup = BeautifulSoup(content, 'lxml')
+        urls = [urljoin(url, a['href'])
+                for a in soup.find_all('a', href=True)]
+        for meta in soup.find_all("meta", {"itemprop": "url"}):
+            urls.append(meta["content"])
+        all_urls.update(urls)
+        if llm ==False:
+            has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
+            if has_next:
+                print("Clicking next button...")
+                await has_next.click()
+                await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
+            else:
+                print("No clickable 'next' button found.")
+        elif llm == True:
+            button = await page.wait_for_selector(f"text={selector}", timeout=3000)
+            if button:
+                print(f"Clicking button: {selector}")
+                await button.click()
+                await page.wait_for_timeout(2000)  # wait for products to load
+            else:
+                print("Button not found anymore.")
+                break
+        
+        # await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.evaluate("""
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        """)
 
-    for _ in range(max_scrolls):
-        page.evaluate(f"() => window.scrollTo(0, {last_height})")
-        time.sleep(wait_time)
+        await asyncio.sleep(2)
+        # await page.wait_for_load_state("networkidle")
+        new_height = await page.evaluate("document.body.scrollHeight")
+        # new_height = await page.evaluate("document.documentElement.scrollHeight")
+        print("new_height",new_height)
 
-        new_height = page.evaluate("() => document.body.scrollHeight")
-        if new_height == last_height:
-            print("No more content to load.")
+        if len(all_urls) == prev_length and new_height == last_height:
             break
         last_height = new_height
-
-    print("Scrolling complete.")
-
+    all_urls = list(all_urls)
+    with open("all_urls.txt", "w",encoding = 'utf-8') as file:
+        for url in all_urls:
+            file.write(url + "\n")
+    print("all_urls",len(all_urls))
+    return all_urls
         
         
 active_requests = {"total":0,"context":0,"page":0}
@@ -207,7 +285,26 @@ async def playwright_scrape(url):
                 await asyncio.sleep(2)
                 resp_stat = response.status
                 list = await scroll_page(page)
+                has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
+                has_pagination_numbers = await page.query_selector(".pagination, .page-numbers, ul.pagination")
+                print("has_next",has_next)
+                print("has_pagination_numbers",has_pagination_numbers)
+                next_button = page.locator("button:has-text('Load next page')")
+                if await next_button.is_visible():
+                    print("found button")
+                    await next_button.click()
+                if has_next or has_pagination_numbers:
+                    all_urls = await pagination_scroll(page,url,selector=None,llm=False)
+                    print("Pagination detected.")
+                else:
+                    print("falling back to llm")
+                    pagination,scrolling,selector = await pagination_type(page,url)
+                    if pagination:
+                        all_urls = await pagination_scroll(page,url,selector,True)
+                    else:
+                        print("No pagination found.")
 
+                
                 content = await page.content()
                 # cookies = await context.cookies()
                 # with open("cookies/blinkit.json", "w") as f:
@@ -223,9 +320,9 @@ async def playwright_scrape(url):
         active_requests["total"] -= 1
         active_requests["page"] -= 1
         
-        with open("output.txt", "w",encoding = 'utf-8') as file:
-            file.write(content)
-        return content, resp_stat,list
+        # with open("output.txt", "w",encoding = 'utf-8') as file:
+        #     file.write(content)
+        return content, resp_stat,all_urls
 
     except Exception as ex:
         print(f"Error in playwright function for URL {url} -- {str(ex)}")
@@ -264,6 +361,32 @@ class HttpClientManager:
 
 http_client_manager = HttpClientManager()
 
+async def get_product_urls(urls):
+    total_tokens = 0
+    limited_urls = []
+    start = time.time()
+    for url in urls:
+        url_tokens = get_tokens_length(url)
+        if total_tokens + url_tokens <= 10000:
+            limited_urls.append(url)
+            total_tokens += url_tokens
+        else:
+            break
+    print("time taken to get limited urls",time.time() - start)
+    output_format = {
+        "url_format": "The format of the product urls" # Give just the format no other string or explanation
+    }
+    prompt = f"""
+    From this list of urls - {limited_urls}
+    give the format of the product urls. Give only that common starting part amongst the urls.
+    So that it can be used later along with product names or ids to form product urls.
+    Output in this json format - {output_format}
+    """
+    response = await llm_service(prompt)
+    response = json.loads(response)
+    print(response)
+    return response["url_format"]
+
 
 play_count = {"total":0,"success":0,"failure":0}
 
@@ -273,16 +396,6 @@ async def scrape_url(request: ScrapeRequest):
 
     play_count["total"] += 1
     # print(f"request recieved for url --{request.url}")
-    try:
-        cached_result = await get_cached_data(url)
-        if cached_result is not None:
-            print("cache used")
-            play_count["success"] += 1
-            return cached_result
-        # print("cache not used")
-    except Exception as ex:
-        print(f"error in caching {str(ex)}")
-    
     
     response = None
     
@@ -292,6 +405,10 @@ async def scrape_url(request: ScrapeRequest):
 
     try:
         response_text,code,list = await playwright_scrape(request.url)
+        product_url_format = await get_product_urls(list)
+        filtered_urls = [url.strip() for url in list if url.strip().startswith(product_url_format)]
+        print(len(filtered_urls))
+        
         soup = BeautifulSoup(response_text, 'lxml')
         page_text = soup.get_text()
         
@@ -321,11 +438,6 @@ async def scrape_url(request: ScrapeRequest):
             "text": page_text,
             "urls": urls
         }
-        if len(page_text) > 1000:
-            try:
-                await set_cached_data(request.url, answer)
-            except Exception as ex:
-                print(f"error in caching {str(ex)}")
         return answer
     except Exception as ex:
         play_count["failure"] += 1
