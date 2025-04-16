@@ -124,32 +124,68 @@ class ScrapeRequest(BaseModel):
 
 #     print("Scrolling complete.")
 
-async def pagination_type(page,url):
-    
+async def get_next_page(page,url):
     output_format = {
-        "pagination":True,
-        "scrolling":True,
-        "selector":None
+        "text" : "The text of the button that takes to the next page" ###give only the text and no extra explanation or other words.
     }
     try:
         content = await page.content()
         soup = BeautifulSoup(content, 'lxml')
-        text = soup.get_text()
+        # Remove header and footer
+        for tag in soup(["header", "footer"]):
+            tag.decompose()  # completely removes the tag and its contents
+
+        # Now extract the text
+        text = soup.get_text(separator="\n", strip=True)
+        # text = soup.get_text()
         prompt = f"""
-            from this text content of a webpage, identify whether the webpage has pagination with subpages for products or not.
+            I will give you text content of a webpage.
+            This webpage has pagination for loading more products.The current webpage is {url}.
+            Identify the text of the button that needs to be clicked that will take me to the next page.
+            The pagination numbers and buttons come usually (but not necessarily) just after the product listings.
+            If there is a button that explicitly says next or load next page or load more products, etc. then give the text for that button.
+            Or else if there are only numbered buttons give the next page number that comes after the current page based on the current url.
+            The text content of the page is {text}
+            Output in this json format - {output_format}
+        """
+        response = await llm_service(prompt)
+        response = json.loads(response)
+        print(response)
+        return response["text"]
+    except Exception as ex:
+        print(f"error in pagination_text {str(ex)}")
+        return "2"
+
+async def pagination_type(page,url):
+    
+    output_format = {
+        "pagination":True
+    }
+    try:
+        content = await page.content()
+        soup = BeautifulSoup(content, 'lxml')
+        # Remove header and footer
+        for tag in soup(["header", "footer"]):
+            tag.decompose()  # completely removes the tag and its contents
+
+        # Now extract the text
+        text = soup.get_text(separator="\n", strip=True)
+        # text = soup.get_text()
+        prompt = f"""
+            from this text content of a webpage, identify whether the webpage has pagination buttons with subpages for products or not.
             If the products are loaded by scrolling and not by a button that needs to be clicked that does not constitute as pagination.
-            Also give the name/selector of the pagination button if it is present.
-            If scrolling is required to load more products but some button is needed to be clicked to load products then give the name of the buttoon in selector along with scrolling True but pagination False.
+            Pagination is when there is a button that when clicked loads more products.It can be with next button or numbered page buttons.
+            The numbers come usually (but not necessarily) just after the product listings.If there are numbers similar to page numbers, or if there is a button that takes to the next page return True.
             output in this json format: {output_format}.
             The text content is below - {text}
             """
         response = await llm_service(prompt)
         response = json.loads(response)
         print(response)
-        return response["pagination"],response["scrolling"],response["selector"]
+        return response["pagination"]
     except Exception as ex:
         print(f"error in pagination_type {str(ex)}")
-        return False,None
+        return False
 
 async def scroll_page(page):
     # last_height = await page.evaluate("document.body.scrollHeight")
@@ -174,7 +210,7 @@ async def scroll_page(page):
         last_height = new_height
     return []
 
-async def pagination_scroll(page,url,selector=None,llm=None):
+async def pagination_scroll(page,url,llm=None):
     # last_height = await page.evaluate("document.body.scrollHeight")
     
     last_height = await page.evaluate("document.documentElement.scrollHeight")
@@ -198,7 +234,28 @@ async def pagination_scroll(page,url,selector=None,llm=None):
             else:
                 print("No clickable 'next' button found.")
         elif llm == True:
-            button = await page.wait_for_selector(f"text={selector}", timeout=3000)
+            # await page.evaluate("""
+            #     (text) => {
+            #         const xpath = `//*[normalize-space(text())='${text}']`;
+            #         const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            #         const element = result.singleNodeValue;
+            #         if (element) {
+            #             element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            #         } else {
+            #             console.warn(`No element found with text: ${text}`);
+            #         }
+            #     }
+            # """, selector)
+
+            try:
+                # Get the current URL the page is on
+                current_url = await page.evaluate("window.location.href")
+                print(f"Current URL: {current_url}")
+                selector = await get_next_page(page,current_url)
+                button = await page.wait_for_selector(f"text={selector}", timeout=3000)
+            except Exception as ex:
+                print(f"error in waiting for button {str(ex)}")
+                break
             if button:
                 print(f"Clicking button: {selector}")
                 await button.click()
@@ -285,23 +342,37 @@ async def playwright_scrape(url):
                 await asyncio.sleep(2)
                 resp_stat = response.status
                 list = await scroll_page(page)
+                with open("output.html", "w",encoding = 'utf-8') as file:
+                    file.write(await page.content())
                 has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
                 has_pagination_numbers = await page.query_selector(".pagination, .page-numbers, ul.pagination")
                 print("has_next",has_next)
                 print("has_pagination_numbers",has_pagination_numbers)
-                next_button = page.locator("button:has-text('Load next page')")
-                if await next_button.is_visible():
-                    print("found button")
-                    await next_button.click()
+                # next_button = page.locator("button:has-text('next page')")
+                buttons = await page.query_selector_all("button, input[type='button'], input[type='submit'], a[role='button'], a.button")
+
+                clickable_texts = []
+
+                for button in buttons:
+                    # Check if button is visible and enabled
+                    if await button.is_visible():
+                        text = await button.inner_text()
+                        clickable_texts.append(text.strip())
+
+                print("Clickable button texts:", clickable_texts)
+                # if await next_button.is_visible():
+                #     print("found button")
+                #     await next_button.click()
                 if has_next or has_pagination_numbers:
-                    all_urls = await pagination_scroll(page,url,selector=None,llm=False)
+                    all_urls = await pagination_scroll(page,url,llm=False)
                     print("Pagination detected.")
                 else:
                     print("falling back to llm")
-                    pagination,scrolling,selector = await pagination_type(page,url)
+                    pagination = await pagination_type(page,url)
                     if pagination:
-                        all_urls = await pagination_scroll(page,url,selector,True)
+                        all_urls = await pagination_scroll(page,url,llm=True)
                     else:
+                        all_urls =[]
                         print("No pagination found.")
 
                 
