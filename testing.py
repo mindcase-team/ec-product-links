@@ -127,10 +127,10 @@ class ScrapeRequest(BaseModel):
 async def paginate_by_links(base_url):
     all_urls = await pagination(base_url)
     all_urls = list(set(all_urls))
-    print("all_urls",(all_urls))
-    with open("all_urls.txt", "w",encoding = 'utf-8') as file:
-        for url in all_urls:
-            file.write(url + "\n")
+    # print("all_urls",(all_urls))
+    # with open("all_urls.txt", "w",encoding = 'utf-8') as file:
+    #     for url in all_urls:
+    #         file.write(url + "\n")
     print("all_urls",len(all_urls))
     return all_urls
     
