@@ -507,7 +507,7 @@ async def scrape_url(request: ScrapeRequest):
 
         answer = {
             "text": page_text,
-            "urls": urls
+            "urls": filtered_urls
         }
         return answer
     except Exception as ex:
