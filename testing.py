@@ -266,6 +266,7 @@ async def pagination_scroll(page,url,llm=None):
     last_height = await page.evaluate("document.documentElement.scrollHeight")
     print("last_height",last_height)
     all_urls = set()
+    has_next_used = False
     while True:
         prev_length = len(all_urls)
         content = await page.content()
@@ -278,10 +279,14 @@ async def pagination_scroll(page,url,llm=None):
         # if llm ==False:
         has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
         if has_next:
-            print("Clicking next button...")
-            await has_next.click()
-            await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
-        else:
+            try:
+                has_next_used = True
+                print("Clicking next button...")
+                await has_next.click()
+                await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
+            except Exception as ex:
+                print(f"error in clicking next button {str(ex)}")
+        elif not has_next_used:
             print("No clickable 'next' button found.")
         # elif llm == True:
             # await page.evaluate("""
@@ -370,8 +375,8 @@ async def playwright_scrape(url):
 
             try:
                 # print(endpoint)
-                browser = await pw.chromium.connect(endpoint, timeout=500_000)
-                # browser = await pw.chromium.launch(headless=False)
+                # browser = await pw.chromium.connect(endpoint, timeout=500_000)
+                browser = await pw.chromium.launch(headless=False)
             except Exception as ex:
                 raise HTTPException(status_code=500, detail=f" error connecting to browserless service {ex}")
             try:
@@ -601,8 +606,8 @@ async def get_product_urls(urls):
     }
     prompt = f"""
     From this list of urls - {limited_urls}
-    give the format of the product urls. Give only that common starting part amongst the urls.
-    So that it can be used later along with product names or ids to form product urls.
+    give the format of the product urls. Give only that common starting part amongst the urls.So that i can use it to filter the urls later.
+    So that it can be used later along with product names or ids to form product urls.Do not give any id or name as then it cant be used as a filter later.
     Output in this json format - {output_format}
     """
     response = await llm_service(prompt)
