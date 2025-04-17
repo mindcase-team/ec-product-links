@@ -124,6 +124,55 @@ class ScrapeRequest(BaseModel):
 
 #     print("Scrolling complete.")
 
+async def paginate_by_links(base_url):
+    all_urls = await pagination(base_url)
+    all_urls = list(set(all_urls))
+    print("all_urls",(all_urls))
+    with open("all_urls.txt", "w",encoding = 'utf-8') as file:
+        for url in all_urls:
+            file.write(url + "\n")
+    print("all_urls",len(all_urls))
+    return all_urls
+    
+
+response_format = {
+'url' : "link to the next page" ####Give only link that exists in the content provided do not make up a link that is not in the content.
+}
+
+async def pagination(url,prev_links = [],all_urls = []):
+
+    html,resp_stat,list = await simple_scrape(url)
+    soup = BeautifulSoup(html, 'lxml')
+    text = soup.get_text()
+    urls = [urljoin(url, a['href'])
+                for a in soup.find_all('a', href=True)]
+    all_urls.extend(urls)
+    prompt = f'''
+    This link has been scraped - {url} 
+    And these urls were obtained from the link --- {urls}.
+    The text content of the page is {text}
+    From the list of urls Find out the link for pagination, subpage that takes us to the next page of the website.Give only link for the next page.
+    If there is no next page link then return the same link.Do not give any link that is not in the list of urls on the page
+    Respond in this json format {response_format}.
+    '''
+    try:
+        response = await llm_service(prompt)
+        response = json.loads(response)
+        print(response)
+        links = response['url']
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=f"Error in pagination llm call: {str(ex)}")
+    prev_links.append(url)
+    print("prev_links",prev_links)
+    if links in prev_links:
+        return all_urls
+    elif links not in urls:
+        return all_urls
+    else:
+        all_urls = await pagination(links,prev_links,all_urls)
+        return all_urls
+
+
 async def get_next_page(page,url):
     output_format = {
         "text" : "The text of the button that takes to the next page" ###give only the text and no extra explanation or other words.
@@ -132,12 +181,13 @@ async def get_next_page(page,url):
         content = await page.content()
         soup = BeautifulSoup(content, 'lxml')
         # Remove header and footer
-        for tag in soup(["header", "footer"]):
-            tag.decompose()  # completely removes the tag and its contents
+        # for tag in soup(["header", "footer"]):
+        #     tag.decompose()  # completely removes the tag and its contents
 
-        # Now extract the text
-        text = soup.get_text(separator="\n", strip=True)
-        # text = soup.get_text()
+        # # Now extract the text
+        # text = soup.get_text(separator="\n", strip=True)
+        text = soup.get_text()
+        
         prompt = f"""
             I will give you text content of a webpage.
             This webpage has pagination for loading more products.The current webpage is {url}.
@@ -225,15 +275,15 @@ async def pagination_scroll(page,url,llm=None):
         for meta in soup.find_all("meta", {"itemprop": "url"}):
             urls.append(meta["content"])
         all_urls.update(urls)
-        if llm ==False:
-            has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
-            if has_next:
-                print("Clicking next button...")
-                await has_next.click()
-                await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
-            else:
-                print("No clickable 'next' button found.")
-        elif llm == True:
+        # if llm ==False:
+        has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
+        if has_next:
+            print("Clicking next button...")
+            await has_next.click()
+            await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
+        else:
+            print("No clickable 'next' button found.")
+        # elif llm == True:
             # await page.evaluate("""
             #     (text) => {
             #         const xpath = `//*[normalize-space(text())='${text}']`;
@@ -250,8 +300,9 @@ async def pagination_scroll(page,url,llm=None):
             try:
                 # Get the current URL the page is on
                 current_url = await page.evaluate("window.location.href")
-                print(f"Current URL: {current_url}")
+                print("using llm to click button")
                 selector = await get_next_page(page,current_url)
+                print("button to click",selector)
                 button = await page.wait_for_selector(f"text={selector}", timeout=3000)
             except Exception as ex:
                 print(f"error in waiting for button {str(ex)}")
@@ -279,9 +330,9 @@ async def pagination_scroll(page,url,llm=None):
             break
         last_height = new_height
     all_urls = list(all_urls)
-    with open("all_urls.txt", "w",encoding = 'utf-8') as file:
-        for url in all_urls:
-            file.write(url + "\n")
+    # with open("all_urls.txt", "w",encoding = 'utf-8') as file:
+    #     for url in all_urls:
+    #         file.write(url + "\n")
     print("all_urls",len(all_urls))
     return all_urls
         
@@ -340,7 +391,7 @@ async def playwright_scrape(url):
                 active_requests["page"] += 1
                 response = await page.goto(url,timeout=100000)
                 await asyncio.sleep(2)
-                resp_stat = response.status
+                
                 list = await scroll_page(page)
                 with open("output.html", "w",encoding = 'utf-8') as file:
                     file.write(await page.content())
@@ -365,15 +416,18 @@ async def playwright_scrape(url):
                 #     await next_button.click()
                 if has_next or has_pagination_numbers:
                     all_urls = await pagination_scroll(page,url,llm=False)
+                    stat = True
                     print("Pagination detected.")
                 else:
                     print("falling back to llm")
-                    pagination = await pagination_type(page,url)
-                    if pagination:
-                        all_urls = await pagination_scroll(page,url,llm=True)
-                    else:
-                        all_urls =[]
-                        print("No pagination found.")
+                    all_urls = []
+                    stat = False
+                    # pagination = await pagination_type(page,url)
+                    # if pagination:
+                    #     all_urls = await pagination_scroll(page,url,llm=True)
+                    # else:
+                    #     all_urls =[]
+                    #     print("No pagination found.")
 
                 
                 content = await page.content()
@@ -393,7 +447,96 @@ async def playwright_scrape(url):
         
         # with open("output.txt", "w",encoding = 'utf-8') as file:
         #     file.write(content)
-        return content, resp_stat,all_urls
+        return content, stat,all_urls
+
+    except Exception as ex:
+        print(f"Error in playwright function for URL {url} -- {str(ex)}")
+        active_requests["total"] -= 1
+        active_requests["page"] -= 1
+        raise HTTPException(status_code=500, detail=f"Error in playwright function {str(ex)}")
+
+    finally:
+        print("current active requests -", active_requests)
+        print("Time taken -", url, time.time() - start)
+        rnd+=1
+        if 'page' in locals() and not page.is_closed():
+            await page.close()
+        if 'context' in locals():
+            await context.close()
+        if 'browser' in locals() and browser.is_connected():
+            await browser.close()
+            
+async def simple_scrape(url):
+    global active_requests, rnd
+    active_requests["total"] += 1
+    if rnd>2:
+        rnd = 0
+    endpoint = endpoints[rnd]
+    user_agent = random.choice(user_agents)
+    parsed_url = urlparse(url)
+    origin = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+    new_headers = {
+        "Origin": origin,
+        "Referer": origin,
+        "User-Agent": user_agent,
+        "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"macOS\"",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-user": "?1",
+    }
+    lower_headers = {k.lower(): v for k, v in new_headers.items()}
+    global pw
+    start = time.time()
+    try:
+        async with concurrency:
+
+            try:
+                # print(endpoint)
+                browser = await pw.chromium.connect(endpoint, timeout=500_000)
+                # browser = await pw.chromium.launch(headless=False)
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f" error connecting to browserless service {ex}")
+            try:
+                context = await browser.new_context(java_script_enabled=True,user_agent=user_agent, extra_http_headers=lower_headers)
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f" error creating context {ex}")
+
+            active_requests["context"] += 1
+            if "linkedin" in url:
+                with open("cookies/google.json", "r") as f:
+                    cookies = json.load(f)
+                await context.add_cookies(cookies)
+            try:
+                page = await context.new_page()
+                await page.evaluate("navigator.webdriver = undefined")
+
+                active_requests["page"] += 1
+                response = await page.goto(url,timeout=100000)
+                await asyncio.sleep(2)
+                resp_stat = response.status       
+                list = await scroll_page(page)
+
+                content = await page.content()
+                # cookies = await context.cookies()
+                # with open("cookies/blinkit.json", "w") as f:
+                #     json.dump(cookies, f)
+
+                
+            except Exception as ex:
+                raise HTTPException(status_code=500, detail=f" error in page actions {ex}")
+
+            await context.close()
+            active_requests["context"] -= 1
+            await browser.close()
+        active_requests["total"] -= 1
+        active_requests["page"] -= 1
+        
+        # with open("output.txt", "w",encoding = 'utf-8') as file:
+        #     file.write(content)
+        return content, resp_stat,list
 
     except Exception as ex:
         print(f"Error in playwright function for URL {url} -- {str(ex)}")
@@ -475,7 +618,9 @@ async def scrape_url(request: ScrapeRequest):
         raise HTTPException(status_code=400, detail=f"Invalid URL: {request.url}")
 
     try:
-        response_text,code,list = await playwright_scrape(request.url)
+        response_text,stat,list = await playwright_scrape(request.url)
+        if stat == False:
+            list = await paginate_by_links(request.url)
         product_url_format = await get_product_urls(list)
         filtered_urls = [url.strip() for url in list if url.strip().startswith(product_url_format)]
         print(len(filtered_urls))
@@ -512,7 +657,7 @@ async def scrape_url(request: ScrapeRequest):
         return answer
     except Exception as ex:
         play_count["failure"] += 1
-        error = f"error in scrape api in else statement for url {request.url} -- {str(ex)}"
+        error = f"error in scrape api for url {request.url} -- {str(ex)}"
         print(error)
         log = {
             "url": request.url,
