@@ -375,8 +375,8 @@ async def playwright_scrape(url):
 
             try:
                 # print(endpoint)
-                # browser = await pw.chromium.connect(endpoint, timeout=500_000)
-                browser = await pw.chromium.launch(headless=False)
+                browser = await pw.chromium.connect(endpoint, timeout=500_000)
+                # browser = await pw.chromium.launch(headless=False)
             except Exception as ex:
                 raise HTTPException(status_code=500, detail=f" error connecting to browserless service {ex}")
             try:
