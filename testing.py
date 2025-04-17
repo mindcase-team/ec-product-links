@@ -393,10 +393,19 @@ async def playwright_scrape(url):
                 await asyncio.sleep(2)
                 
                 list = await scroll_page(page)
-                with open("output.html", "w",encoding = 'utf-8') as file:
-                    file.write(await page.content())
+
                 has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
                 has_pagination_numbers = await page.query_selector(".pagination, .page-numbers, ul.pagination")
+                pagination_numbers = await page.query_selector_all(".pagination li a, .page-numbers li a, ul.pagination li a")
+
+                # Print how many pagination buttons are found
+                print(f"Found {len(pagination_numbers)} pagination buttons")
+
+                # # Click the second one as an example (e.g., page 2)
+                # if len(pagination_numbers) > 1:
+                #     await pagination_numbers[1].click()  # Usually [0] is page 1, [1] is page 2, etc.
+                # else:
+                #     print("Not enough pagination buttons found.")
                 print("has_next",has_next)
                 print("has_pagination_numbers",has_pagination_numbers)
                 # next_button = page.locator("button:has-text('next page')")
@@ -414,7 +423,7 @@ async def playwright_scrape(url):
                 # if await next_button.is_visible():
                 #     print("found button")
                 #     await next_button.click()
-                if has_next or has_pagination_numbers:
+                if has_next:
                     all_urls = await pagination_scroll(page,url,llm=False)
                     stat = True
                     print("Pagination detected.")
@@ -445,8 +454,8 @@ async def playwright_scrape(url):
         active_requests["total"] -= 1
         active_requests["page"] -= 1
         
-        # with open("output.txt", "w",encoding = 'utf-8') as file:
-        #     file.write(content)
+        # with open("output.html", "w",encoding = 'utf-8') as file:
+        #     file.write(await page.content())
         return content, stat,all_urls
 
     except Exception as ex:
