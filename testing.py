@@ -237,28 +237,40 @@ async def detect_pagination(page,url):
         print(f"error in pagination_type {str(ex)}")
         return False
 
-async def scroll_page(page):
-    # last_height = await page.evaluate("document.body.scrollHeight")
-    last_height = await page.evaluate("document.documentElement.scrollHeight")
-    print("last_height",last_height)
-
+async def wait_for_scroll_height_increase(page, old_height):
     while True:
+        await asyncio.sleep(2)
+        new_height = await page.evaluate("document.documentElement.scrollHeight")
+        if new_height > old_height:
+            break
+        
 
-        # await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+async def scroll_page(page, max_scrolls=50, timeout=50):
+    last_height = await page.evaluate("document.documentElement.scrollHeight")
+    print("Initial scroll height:", last_height)
+    scroll_attempt = 0
+
+    # while scroll_attempt < max_scrolls:
+    while True:
         await page.evaluate("""
             window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
         """)
 
-        await asyncio.sleep(2)
-        # await page.wait_for_load_state("networkidle")
-        new_height = await page.evaluate("document.body.scrollHeight")
-        # new_height = await page.evaluate("document.documentElement.scrollHeight")
-        print("new_height",new_height)
-
-        if new_height == last_height:
+        # Wait until scrollHeight increases or timeout hits
+        try:
+            await asyncio.wait_for(
+                wait_for_scroll_height_increase(page, last_height),
+                timeout=timeout
+            )
+            last_height = await page.evaluate("document.documentElement.scrollHeight")
+            print(f"New height : {last_height}")
+        except asyncio.TimeoutError:
+            print(f"No new content , stopping.")
             break
-        last_height = new_height
-    return []
+
+        scroll_attempt += 1
+
+    return [],scroll_attempt
 
 async def pagination_scroll(page,url,llm=None):
     # last_height = await page.evaluate("document.body.scrollHeight")
@@ -398,57 +410,62 @@ async def playwright_scrape(url):
                 response = await page.goto(url,timeout=100000)
                 await asyncio.sleep(2)
                 
-                list = await scroll_page(page)
+                list,scroll_attempts = await scroll_page(page)
+                if scroll_attempts < 5:
+                    has_next = await page.query_selector(
+                        "a[rel='next'], .pagination-next, .next, .page-next, button[aria-label='Go to next page'], button.MuiPaginationItem-previousNext"
+                    )
+                    has_pagination_numbers = await page.query_selector(".pagination, .page-numbers, ul.pagination")
+                    pagination_numbers = await page.query_selector_all(".pagination li a, .page-numbers li a, ul.pagination li a")
+                    
+                    print(f"Found {len(pagination_numbers)} pagination buttons")
+                    
+                    print("has_next",has_next)
+                    print("has_pagination_numbers",has_pagination_numbers)
 
-                has_next = await page.query_selector(
-                    "a[rel='next'], .pagination-next, .next, .page-next, button[aria-label='Go to next page'], button.MuiPaginationItem-previousNext"
-                )
-                has_pagination_numbers = await page.query_selector(".pagination, .page-numbers, ul.pagination")
-                pagination_numbers = await page.query_selector_all(".pagination li a, .page-numbers li a, ul.pagination li a")
-                
-                print(f"Found {len(pagination_numbers)} pagination buttons")
-                
-                print("has_next",has_next)
-                print("has_pagination_numbers",has_pagination_numbers)
+                    # # Click the second one as an example (e.g., page 2)
+                    # if len(pagination_numbers) > 1:
+                    #     await pagination_numbers[1].click()  # Usually [0] is page 1, [1] is page 2, etc.
+                    # else:
+                    #     print("Not enough pagination buttons found.")
 
-                # # Click the second one as an example (e.g., page 2)
-                # if len(pagination_numbers) > 1:
-                #     await pagination_numbers[1].click()  # Usually [0] is page 1, [1] is page 2, etc.
-                # else:
-                #     print("Not enough pagination buttons found.")
+                    # next_button = page.locator("button:has-text('next page')")
+                    # buttons = await page.query_selector_all("button, input[type='button'], input[type='submit'], a[role='button'], a.button")
 
-                # next_button = page.locator("button:has-text('next page')")
-                # buttons = await page.query_selector_all("button, input[type='button'], input[type='submit'], a[role='button'], a.button")
+                    # clickable_texts = []
 
-                # clickable_texts = []
+                    # for button in buttons:
+                    #     # Check if button is visible and enabled
+                    #     if await button.is_visible():
+                    #         text = await button.inner_text()
+                    #         clickable_texts.append(text.strip())
 
-                # for button in buttons:
-                #     # Check if button is visible and enabled
-                #     if await button.is_visible():
-                #         text = await button.inner_text()
-                #         clickable_texts.append(text.strip())
+                    # print("Clickable button texts:", clickable_texts)
+                    # if await next_button.is_visible():
+                    #     print("found button")
+                    #     await next_button.click()
+                    all_urls = []
+                    all_urls,stat = await pagination_scroll(page,url,llm=False)
+                    
 
-                # print("Clickable button texts:", clickable_texts)
-                # if await next_button.is_visible():
-                #     print("found button")
-                #     await next_button.click()
-                all_urls = []
-                all_urls,stat = await pagination_scroll(page,url,llm=False)
-                
-
-                # pagination = await detect_pagination(page,url)
-                # if pagination:
-                #     all_urls = await pagination_scroll(page,url,llm=True)
-                # else:
-                #     all_urls =[]
-                #     print("No pagination found.")
-
+                    # pagination = await detect_pagination(page,url)
+                    # if pagination:
+                    #     all_urls = await pagination_scroll(page,url,llm=True)
+                    # else:
+                    #     all_urls =[]
+                    #     print("No pagination found.")
+                else:
+                    stat = True
+                    all_urls = []
+                    
+                    
                 
                 content = await page.content()
                 # cookies = await context.cookies()
                 # with open("cookies/blinkit.json", "w") as f:
                 #     json.dump(cookies, f)
 
+                
                 
             except Exception as ex:
                 raise HTTPException(status_code=500, detail=f" error in page actions {ex}")
@@ -628,17 +645,18 @@ async def scrape_url(request: ScrapeRequest):
         raise HTTPException(status_code=400, detail=f"Invalid URL: {request.url}")
 
     try:
-        response_text,stat,list = await playwright_scrape(request.url)
-        if stat == False:
-            list = await paginate_by_links(request.url)
-        product_url_format = await get_product_urls(list)
-        filtered_urls = [url.strip() for url in list if url.strip().startswith(product_url_format)]
-
+        response_text,stat,scrolled_urls = await playwright_scrape(request.url)
         soup = BeautifulSoup(response_text, 'lxml')
         urls = [urljoin(request.url, a['href'])
                 for a in soup.find_all('a', href=True)]
-        for meta in soup.find_all("meta", {"itemprop": "url"}):
-            urls.append(meta["content"])
+
+        scrolled_urls.extend(urls)
+        if stat == False:
+            scrolled_urls  = await paginate_by_links(request.url)
+        product_url_format = await get_product_urls(scrolled_urls)
+        filtered_urls = [url.strip() for url in scrolled_urls if url.strip().startswith(product_url_format)]
+
+        filtered_urls = list(set(filtered_urls))
         urls.extend(filtered_urls)
         urls = list(set(urls))
         print(f"length of text on url{request.url} ",len(filtered_urls))
@@ -647,9 +665,9 @@ async def scrape_url(request: ScrapeRequest):
         del response_text
         play_count["success"] += 1
         
-        # with open("urls.txt", "w",encoding = 'utf-8') as file:
-        #     for url in urls:
-        #         file.write(url + "\n")
+        with open("urls.txt", "w",encoding = 'utf-8') as file:
+            for url in urls:
+                file.write(url + "\n")
 
 
         answer = {
