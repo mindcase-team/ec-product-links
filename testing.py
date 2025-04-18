@@ -206,7 +206,7 @@ async def get_next_page(page,url):
         print(f"error in pagination_text {str(ex)}")
         return "2"
 
-async def pagination_type(page,url):
+async def detect_pagination(page,url):
     
     output_format = {
         "pagination":True
@@ -267,6 +267,7 @@ async def pagination_scroll(page,url,llm=None):
     print("last_height",last_height)
     all_urls = set()
     has_next_used = False
+    success = False
     while True:
         prev_length = len(all_urls)
         content = await page.content()
@@ -277,17 +278,20 @@ async def pagination_scroll(page,url,llm=None):
             urls.append(meta["content"])
         all_urls.update(urls)
         # if llm ==False:
-        has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
+        has_next = await page.query_selector(
+            "a[rel='next'], .pagination-next, .next, .page-next, button[aria-label='Go to next page'], button.MuiPaginationItem-previousNext"
+        )
         if has_next:
             try:
                 has_next_used = True
                 print("Clicking next button...")
                 await has_next.click()
-                await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
+                success = True
+                # await page.wait_for_load_state("networkidle")  # Wait until the page finishes loading
             except Exception as ex:
                 print(f"error in clicking next button {str(ex)}")
         elif not has_next_used:
-            print("No clickable 'next' button found.")
+            print("No clickable 'next' button found. using LLM")
         # elif llm == True:
             # await page.evaluate("""
             #     (text) => {
@@ -305,7 +309,6 @@ async def pagination_scroll(page,url,llm=None):
             try:
                 # Get the current URL the page is on
                 current_url = await page.evaluate("window.location.href")
-                print("using llm to click button")
                 selector = await get_next_page(page,current_url)
                 print("button to click",selector)
                 button = await page.wait_for_selector(f"text={selector}", timeout=3000)
@@ -315,6 +318,7 @@ async def pagination_scroll(page,url,llm=None):
             if button:
                 print(f"Clicking button: {selector}")
                 await button.click()
+                success = True
                 await page.wait_for_timeout(2000)  # wait for products to load
             else:
                 print("Button not found anymore.")
@@ -339,7 +343,7 @@ async def pagination_scroll(page,url,llm=None):
     #     for url in all_urls:
     #         file.write(url + "\n")
     print("all_urls",len(all_urls))
-    return all_urls
+    return all_urls,success
         
         
 active_requests = {"total":0,"context":0,"page":0}
@@ -385,10 +389,7 @@ async def playwright_scrape(url):
                 raise HTTPException(status_code=500, detail=f" error creating context {ex}")
 
             active_requests["context"] += 1
-            if "linkedin" in url:
-                with open("cookies/google.json", "r") as f:
-                    cookies = json.load(f)
-                await context.add_cookies(cookies)
+
             try:
                 page = await context.new_page()
                 await page.evaluate("navigator.webdriver = undefined")
@@ -399,49 +400,48 @@ async def playwright_scrape(url):
                 
                 list = await scroll_page(page)
 
-                has_next = await page.query_selector("a[rel='next'], .pagination-next, .next, .page-next")
+                has_next = await page.query_selector(
+                    "a[rel='next'], .pagination-next, .next, .page-next, button[aria-label='Go to next page'], button.MuiPaginationItem-previousNext"
+                )
                 has_pagination_numbers = await page.query_selector(".pagination, .page-numbers, ul.pagination")
                 pagination_numbers = await page.query_selector_all(".pagination li a, .page-numbers li a, ul.pagination li a")
-
-                # Print how many pagination buttons are found
+                
                 print(f"Found {len(pagination_numbers)} pagination buttons")
+                
+                print("has_next",has_next)
+                print("has_pagination_numbers",has_pagination_numbers)
 
                 # # Click the second one as an example (e.g., page 2)
                 # if len(pagination_numbers) > 1:
                 #     await pagination_numbers[1].click()  # Usually [0] is page 1, [1] is page 2, etc.
                 # else:
                 #     print("Not enough pagination buttons found.")
-                print("has_next",has_next)
-                print("has_pagination_numbers",has_pagination_numbers)
+
                 # next_button = page.locator("button:has-text('next page')")
-                buttons = await page.query_selector_all("button, input[type='button'], input[type='submit'], a[role='button'], a.button")
+                # buttons = await page.query_selector_all("button, input[type='button'], input[type='submit'], a[role='button'], a.button")
 
-                clickable_texts = []
+                # clickable_texts = []
 
-                for button in buttons:
-                    # Check if button is visible and enabled
-                    if await button.is_visible():
-                        text = await button.inner_text()
-                        clickable_texts.append(text.strip())
+                # for button in buttons:
+                #     # Check if button is visible and enabled
+                #     if await button.is_visible():
+                #         text = await button.inner_text()
+                #         clickable_texts.append(text.strip())
 
-                print("Clickable button texts:", clickable_texts)
+                # print("Clickable button texts:", clickable_texts)
                 # if await next_button.is_visible():
                 #     print("found button")
                 #     await next_button.click()
-                if has_next:
-                    all_urls = await pagination_scroll(page,url,llm=False)
-                    stat = True
-                    print("Pagination detected.")
-                else:
-                    print("falling back to llm")
-                    all_urls = []
-                    stat = False
-                    # pagination = await pagination_type(page,url)
-                    # if pagination:
-                    #     all_urls = await pagination_scroll(page,url,llm=True)
-                    # else:
-                    #     all_urls =[]
-                    #     print("No pagination found.")
+                all_urls = []
+                all_urls,stat = await pagination_scroll(page,url,llm=False)
+                
+
+                # pagination = await detect_pagination(page,url)
+                # if pagination:
+                #     all_urls = await pagination_scroll(page,url,llm=True)
+                # else:
+                #     all_urls =[]
+                #     print("No pagination found.")
 
                 
                 content = await page.content()
@@ -459,8 +459,8 @@ async def playwright_scrape(url):
         active_requests["total"] -= 1
         active_requests["page"] -= 1
         
-        # with open("output.html", "w",encoding = 'utf-8') as file:
-        #     file.write(await page.content())
+        with open("output.html", "w",encoding = 'utf-8') as file:
+            file.write(content)
         return content, stat,all_urls
 
     except Exception as ex:
@@ -519,10 +519,7 @@ async def simple_scrape(url):
                 raise HTTPException(status_code=500, detail=f" error creating context {ex}")
 
             active_requests["context"] += 1
-            if "linkedin" in url:
-                with open("cookies/google.json", "r") as f:
-                    cookies = json.load(f)
-                await context.add_cookies(cookies)
+            
             try:
                 page = await context.new_page()
                 await page.evaluate("navigator.webdriver = undefined")
@@ -623,7 +620,6 @@ async def scrape_url(request: ScrapeRequest):
     url = request.url
 
     play_count["total"] += 1
-    # print(f"request recieved for url --{request.url}")
     
     response = None
     
@@ -637,36 +633,28 @@ async def scrape_url(request: ScrapeRequest):
             list = await paginate_by_links(request.url)
         product_url_format = await get_product_urls(list)
         filtered_urls = [url.strip() for url in list if url.strip().startswith(product_url_format)]
-        print(len(filtered_urls))
-        
-        soup = BeautifulSoup(response_text, 'lxml')
-        page_text = soup.get_text()
-        
-        page_text = re.sub(r'\s+', ' ', page_text).strip()
 
+        soup = BeautifulSoup(response_text, 'lxml')
         urls = [urljoin(request.url, a['href'])
                 for a in soup.find_all('a', href=True)]
         for meta in soup.find_all("meta", {"itemprop": "url"}):
             urls.append(meta["content"])
-        print(f"length of text on url{request.url} ",len(page_text))
+        urls.extend(filtered_urls)
+        urls = list(set(urls))
+        print(f"length of text on url{request.url} ",len(filtered_urls))
         gc.collect()
         del soup
         del response_text
         play_count["success"] += 1
-        with open("urls.txt", "w",encoding = 'utf-8') as file:
-            for url in urls:
-                file.write(url + "\n")
-        # log = {
-        #     "url": request.url,
-        #     "output": page_text.replace('\u0000', '')[:100],
-        #     "status_code": code,
-        #     "character_length": len(page_text),
-        #     "method_used":"playwright"
-        # }
+        
+        # with open("urls.txt", "w",encoding = 'utf-8') as file:
+        #     for url in urls:
+        #         file.write(url + "\n")
+
 
         answer = {
-            "text": page_text,
-            "urls": filtered_urls
+            "product_urls": filtered_urls,
+            "all_urls": urls
         }
         return answer
     except Exception as ex:
@@ -683,3 +671,9 @@ async def scrape_url(request: ScrapeRequest):
         await logs.put(log)
         raise HTTPException(status_code=500, detail=f"error scraping with playwright{str(ex)}")
 
+
+
+##page_text code 
+# page_text = soup.get_text()
+
+# page_text = re.sub(r'\s+', ' ', page_text).strip()
