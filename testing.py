@@ -245,32 +245,32 @@ async def wait_for_scroll_height_increase(page, old_height):
             break
         
 
-async def scroll_page(page, max_scrolls=50, timeout=50):
+async def scroll_page(page, step=200, delay=0.75, max_retries=50):
     last_height = await page.evaluate("document.documentElement.scrollHeight")
     print("Initial scroll height:", last_height)
-    scroll_attempt = 0
 
-    # while scroll_attempt < max_scrolls:
+    retries = 0
+    height_changes = 0
     while True:
-        await page.evaluate("""
-            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        """)
+        await page.evaluate(f"window.scrollBy(0, {step})")
+        await asyncio.sleep(delay)
+        new_height = await page.evaluate("document.documentElement.scrollHeight")
+        print(f"New height: {new_height}, Last height: {last_height}")
 
-        # Wait until scrollHeight increases or timeout hits
-        try:
-            await asyncio.wait_for(
-                wait_for_scroll_height_increase(page, last_height),
-                timeout=timeout
-            )
-            last_height = await page.evaluate("document.documentElement.scrollHeight")
-            print(f"New height : {last_height}")
-        except asyncio.TimeoutError:
-            print(f"No new content , stopping.")
+        if new_height > last_height:
+            last_height = new_height
+            retries = 0  # Reset if page grew
+            height_changes += 1
+            await asyncio.sleep(2)
+        else:
+            retries += 1
+            print(f"No growth. Retry {retries}/{max_retries}")
+
+        if retries >= max_retries:
+            print("Stopping scroll - max retries reached.")
             break
 
-        scroll_attempt += 1
-
-    return [],scroll_attempt
+    return [],height_changes
 
 async def pagination_scroll(page,url,llm=None):
     # last_height = await page.evaluate("document.body.scrollHeight")
